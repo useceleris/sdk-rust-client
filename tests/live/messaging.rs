@@ -18,7 +18,8 @@ use crate::support::collect::{
 };
 use crate::support::signer::{Claims, now_millis};
 use crate::support::wait::{
-    EVENT_WAIT, await_body, await_error, await_message, is_server_error, server_error, settle,
+    EVENT_WAIT, await_body, await_denial, await_error, await_message, is_server_error,
+    server_error, settle,
 };
 
 /// Sets a flag when the channel reports a RateLimitError.
@@ -243,21 +244,23 @@ async fn reports_a_read_only_tokens_publish_as_permission_denied() {
 } // end fn reports_a_read_only_tokens_publish_as_permission_denied
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn keeps_a_write_only_token_publishing_while_receiving_nothing() {
+async fn keeps_a_write_only_token_publishing_while_its_subscription_is_refused() {
     let reference = unique_channel_reference("writeonly");
     let write_only = connected(&reference, Claims::permission(false, true)).await;
     let reader = connected(&reference, Claims::default()).await;
     let writer_chat = segment(&write_only, "chat");
     let writer_saw = collect(&writer_chat);
+    let refused = await_denial(&write_only, "SUB", "chat");
     subscribe(&writer_chat);
     subscribe(&segment(&reader, "chat"));
+    refused.wait().await;
     settle().await;
 
     publish_and_await(&write_only, &reader, "chat", "one-way").await;
     sleep(Duration::from_millis(1500)).await;
 
     assert_payloads(&writer_saw, &[]);
-} // end fn keeps_a_write_only_token_publishing_while_receiving_nothing
+} // end fn keeps_a_write_only_token_publishing_while_its_subscription_is_refused
 
 /// RES-05: subscriptions that the server drops under its rate limit recover.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

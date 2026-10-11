@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tokio::time::sleep;
-use useceleris_client::{Channel, ServerErrorType};
+use useceleris_client::{Channel, ChannelState, ServerErrorType};
 
 use crate::support::channels::{
     confirm_quiet, connect, connected, open, options, pair, publish_and_await, publish_text,
@@ -14,7 +14,9 @@ use crate::support::channels::{
 use crate::support::collect::{Recorder, assert_payloads, collect, collect_channel, tagged};
 use crate::support::environment::websocket_url;
 use crate::support::signer::Claims;
-use crate::support::wait::{EVENT_WAIT, await_channel_body, await_error, is_server_error, settle};
+use crate::support::wait::{
+    EVENT_WAIT, await_channel_body, await_denial, await_error, is_server_error, settle,
+};
 
 /// The connection ids that a presence list of `segment_id` shows.
 async fn connections_in(channel: &Channel, segment_id: &str) -> Vec<String> {
@@ -167,17 +169,58 @@ async fn keeps_other_listeners_and_the_subscription_when_one_listener_stops() {
     assert_payloads(&kept, &["one", "two"]);
 } // end fn keeps_other_listeners_and_the_subscription_when_one_listener_stops
 
+/// A publish is not a membership: only a subscription receives (SEG-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delivers_to_a_segment_joined_by_publishing() {
-    let (publisher, receiver) = pair("publish-join", Claims::default()).await;
+async fn delivers_nothing_to_a_connection_that_only_publishes_and_delivers_once_it_subscribes() {
+    let (publisher, receiver) = pair("publish-no-join", Claims::default()).await;
     let chat = collect(&segment(&receiver, "chat"));
-    publish_text(&receiver, "chat", "joining").await;
+    subscribe(&segment(&publisher, "chat"));
     settle().await;
 
-    publish_and_await(&publisher, &receiver, "chat", "after").await;
+    // The publish lands, which proves that it ran on the server.
+    publish_and_await(&receiver, &publisher, "chat", "from-receiver").await;
+    publish_text(&publisher, "chat", "unheard").await;
+    confirm_quiet(&publisher, &receiver).await;
+    assert_payloads(&chat, &[]);
 
-    assert_payloads(&chat, &["after"]);
-} // end fn delivers_to_a_segment_joined_by_publishing
+    subscribe(&segment(&receiver, "chat"));
+    settle().await;
+    publish_and_await(&publisher, &receiver, "chat", "heard").await;
+
+    assert_payloads(&chat, &["heard"]);
+} // end fn delivers_nothing_to_a_connection_that_only_publishes_and_delivers_once_it_subscribes
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gives_no_echo_on_a_named_segment_before_a_subscription() {
+    let reference = unique_channel_reference("publish-no-echo");
+    let publisher = connected(&reference, Claims::default()).await;
+    let echoing = connected(&reference, Claims::echo()).await;
+    let chat = collect(&segment(&echoing, "chat"));
+
+    publish_text(&echoing, "chat", "unheard").await;
+    confirm_quiet(&publisher, &echoing).await;
+    assert_payloads(&chat, &[]);
+
+    subscribe(&segment(&echoing, "chat"));
+    settle().await;
+    publish_and_await(&echoing, &echoing, "chat", "echoed").await;
+
+    assert_payloads(&chat, &["echoed"]);
+} // end fn gives_no_echo_on_a_named_segment_before_a_subscription
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn does_not_list_a_connection_that_only_publishes_in_the_presence_of_the_segment() {
+    let (publisher, receiver) = pair("publish-no-presence", Claims::default()).await;
+    subscribe(&segment(&publisher, "chat"));
+    settle().await;
+
+    publish_and_await(&receiver, &publisher, "chat", "from-receiver").await;
+    sleep(Duration::from_secs(3)).await;
+
+    let listed = connections_in(&publisher, "chat").await;
+
+    assert_eq!(listed.len(), 1, "chat {listed:?}, want one connection");
+} // end fn does_not_list_a_connection_that_only_publishes_in_the_presence_of_the_segment
 
 /// Watching presence is not membership: it neither joins nor holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -202,50 +245,25 @@ async fn never_joins_or_holds_a_segment_for_a_presence_subscription() {
     assert_payloads(&chat, &["one"]);
 } // end fn never_joins_or_holds_a_segment_for_a_presence_subscription
 
+/// Write access publishes and read access subscribes. The two are separate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn leaves_a_segment_joined_by_publishing_on_the_last_cancel() {
-    let (publisher, receiver) = pair("publish-leave", Claims::default()).await;
-    let chat = collect(&segment(&receiver, "chat"));
-    publish_text(&receiver, "chat", "joining").await;
-    let membership = subscribe(&segment(&receiver, "chat"));
-    settle().await;
-
-    membership.cancel();
-    settle().await;
-    publish_text(&publisher, "chat", "late").await;
-    confirm_quiet(&publisher, &receiver).await;
-
-    assert_payloads(&chat, &[]);
-} // end fn leaves_a_segment_joined_by_publishing_on_the_last_cancel
-
-/// Read access is checked at join, so a token's permissions decide whether
-/// publishing makes a segment deliver.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn receives_after_publishing_with_a_read_write_token() {
-    let (publisher, receiver) = pair("publish-read-write", Claims::permission(true, true)).await;
-    let chat = collect(&segment(&receiver, "chat"));
-    publish_text(&receiver, "chat", "joining").await;
-    settle().await;
-
-    publish_and_await(&publisher, &receiver, "chat", "after").await;
-
-    assert_payloads(&chat, &["after"]);
-} // end fn receives_after_publishing_with_a_read_write_token
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn receives_nothing_after_publishing_with_a_write_only_token() {
+async fn refuses_a_write_only_tokens_subscription_and_still_delivers_its_publish() {
     let (publisher, receiver) = pair("publish-write-only", Claims::permission(false, true)).await;
     let chat = collect(&segment(&receiver, "chat"));
     subscribe(&segment(&publisher, "chat"));
     settle().await;
 
-    // The publish lands, which proves that the write-only connection is up.
-    publish_and_await(&receiver, &publisher, "chat", "joining").await;
+    let denied = await_denial(&receiver, "SUB", "chat");
+    subscribe(&segment(&receiver, "chat"));
+    denied.wait().await;
+
+    publish_and_await(&receiver, &publisher, "chat", "written").await;
     publish_text(&publisher, "chat", "unheard").await;
     sleep(Duration::from_millis(2500)).await;
 
     assert_payloads(&chat, &[]);
-} // end fn receives_nothing_after_publishing_with_a_write_only_token
+    assert_eq!(receiver.state(), ChannelState::Connected);
+} // end fn refuses_a_write_only_tokens_subscription_and_still_delivers_its_publish
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_a_read_only_tokens_publish_and_delivers_once_subscribed() {
@@ -303,11 +321,13 @@ async fn multiplexes_a_channels_segments_over_one_connection() {
 async fn channel_listener_catches_deliveries_no_segment_listener_asked_for() {
     let (publisher, receiver) = pair("channel-listener", Claims::default()).await;
     let (seen, _registration) = collect_channel(&receiver);
-    publish_text(&receiver, "joined", "joining").await;
+
+    // A subscription with no segment listener, and the default segment.
+    subscribe(&segment(&receiver, "unlistened"));
     settle().await;
 
     let last = await_channel_body(&receiver, "y");
-    publish_text(&publisher, "joined", "x").await;
+    publish_text(&publisher, "unlistened", "x").await;
     publish_text(&publisher, "default", "y").await;
     last.wait().await;
     settle().await;
@@ -315,7 +335,7 @@ async fn channel_listener_catches_deliveries_no_segment_listener_asked_for() {
     let mut entries = tagged(&seen);
     entries.sort();
 
-    assert_eq!(entries, ["default:y", "joined:x"]);
+    assert_eq!(entries, ["default:y", "unlistened:x"]);
 } // end fn channel_listener_catches_deliveries_no_segment_listener_asked_for
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

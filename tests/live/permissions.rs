@@ -10,7 +10,7 @@ use crate::support::channels::{
     unique_channel_reference,
 };
 use crate::support::collect::{assert_payloads, collect};
-use crate::support::signer::{Claims, SegmentPermission, TokenPermission};
+use crate::support::signer::{Claims, Replay, SegmentPermission, TokenPermission};
 use crate::support::wait::{EVENT_WAIT, await_body, await_denial, await_presence, settle};
 
 /// A token that can read "readonly", write "writeonly", and nothing else: no
@@ -54,14 +54,16 @@ async fn lets_a_read_only_segment_receive_and_refuses_its_publish() {
 } // end fn lets_a_read_only_segment_receive_and_refuses_its_publish
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn lets_a_write_only_segment_publish_and_receive_nothing() {
+async fn lets_a_write_only_segment_publish_and_refuses_its_subscription() {
     let reference = unique_channel_reference("perm-write");
     let reader = connected(&reference, Claims::default()).await;
     let limited = connected(&reference, segment_permissions()).await;
     let writeonly = segment(&limited, "writeonly");
     let received = collect(&writeonly);
     subscribe(&segment(&reader, "writeonly"));
+    let refused = await_denial(&limited, "SUB", "writeonly");
     subscribe(&writeonly);
+    refused.wait().await;
     settle().await;
 
     publish_and_await(&limited, &reader, "writeonly", "from-limited").await;
@@ -69,7 +71,28 @@ async fn lets_a_write_only_segment_publish_and_receive_nothing() {
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
 
     assert_payloads(&received, &[]);
-} // end fn lets_a_write_only_segment_publish_and_receive_nothing
+    assert_eq!(limited.state(), ChannelState::Connected);
+} // end fn lets_a_write_only_segment_publish_and_refuses_its_subscription
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replays_a_write_only_publish_to_a_later_subscriber() {
+    let reference = unique_channel_reference("perm-write-replay");
+    let limited = connected(&reference, segment_permissions()).await;
+    let writeonly = segment(&limited, "writeonly");
+    let received = collect(&writeonly);
+    // No connection is in the segment when the write-only token publishes.
+    publish_text(&limited, "writeonly", "kept").await;
+    settle().await;
+
+    let reader = connected(&reference, Claims::replay(Replay::Backlog)).await;
+    let history = segment(&reader, "writeonly");
+    let replayed = await_body(&history, "kept");
+    subscribe(&history);
+    replayed.wait().await;
+
+    assert_payloads(&received, &[]);
+    assert_eq!(limited.state(), ChannelState::Connected);
+} // end fn replays_a_write_only_publish_to_a_later_subscriber
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_presence_on_a_segment_without_read_access() {

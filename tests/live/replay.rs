@@ -12,7 +12,7 @@ use crate::support::channels::{
 };
 use crate::support::collect::{
     Delivery, Recorder, assert_payloads, collect, collect_channel, distinct_message_ids,
-    is_generated_message_id, numbered, tagged,
+    is_generated_message_id, numbered, payloads, tagged,
 };
 use crate::support::environment::websocket_url;
 use crate::support::signer::{Claims, Replay};
@@ -207,22 +207,32 @@ async fn replays_each_segments_backlog_when_that_segment_is_joined() {
 } // end fn replays_each_segments_backlog_when_that_segment_is_joined
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replays_to_a_segment_joined_by_publishing() {
-    let reference = unique_channel_reference("replay-publish-join");
+async fn starts_no_replay_with_a_publish_and_replays_on_the_subscription() {
+    let reference = unique_channel_reference("replay-publish-no-join");
     let publisher = connected(&reference, Claims::default()).await;
+
+    // A member keeps the segment, and its backlog, on the server.
+    subscribe(&segment(&publisher, "history"));
+    settle().await;
     publish_all(&publisher, "history", &["h1"]).await;
     settle().await;
 
     let receiver = connected(&reference, Claims::replay(Replay::Backlog)).await;
     let history = segment(&receiver, "history");
     let delivered = collect(&history);
+    publish_all(&receiver, "history", &["no-join"]).await;
+    sleep(Duration::from_millis(2500)).await;
+    assert_payloads(&delivered, &[]);
+
     let replay = await_body(&history, "h1");
-    publish_all(&receiver, "history", &["joining"]).await;
+    subscribe(&history);
     replay.wait().await;
     settle().await;
 
-    assert_payloads(&delivered, &["h1"]);
-} // end fn replays_to_a_segment_joined_by_publishing
+    let bodies = payloads(&delivered);
+
+    assert!(bodies.iter().any(|body| body == "h1"), "bodies {bodies:?}");
+} // end fn starts_no_replay_with_a_publish_and_replays_on_the_subscription
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovers_what_a_rejoin_missed_and_drops_what_it_already_delivered() {

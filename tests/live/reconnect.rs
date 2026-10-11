@@ -293,25 +293,6 @@ async fn recovers_every_missed_message_after_a_longer_outage_with_failed_attempt
 } // end fn recovers_every_missed_message_after_a_longer_outage_with_failed_attempts
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn does_not_rejoin_a_segment_that_the_connection_joined_only_by_publishing() {
-    let setup = ReconnectSetup::start("reconnect-publish-join", true).await;
-    let team = collect(&segment(&setup.receiver, "team"));
-    setup.connect().await;
-    publish_text(&setup.receiver, "team", "joining").await;
-    settle().await;
-    publish_and_await(&setup.publisher, &setup.receiver, "team", "before").await;
-
-    setup.start_outage().await;
-    setup.end_outage().await;
-    settle().await;
-
-    publish_text(&setup.publisher, "team", "after").await;
-    confirm_quiet(&setup.publisher, &setup.receiver).await;
-
-    assert_payloads(&team, &["before"]);
-} // end fn does_not_rejoin_a_segment_that_the_connection_joined_only_by_publishing
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn announces_the_new_connection_and_restores_its_presence_subscription_after_a_reconnect() {
     let setup = ReconnectSetup::start("reconnect-presence", true).await;
     let room = segment(&setup.receiver, "room");
