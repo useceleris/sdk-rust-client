@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 
+use crate::constants::SDK_VERSION;
 use crate::errors::CelerisError;
+use crate::random::message_id_prefix;
 use crate::tests::support::{
     DialBehaviour, Recorder, client_with_server, connected_channel, delivery_frame, error_recorder,
     fill_pipe, settle, state_recorder, test_options, wait_until,
@@ -25,12 +27,13 @@ async fn publish_resolves_on_local_acceptance_with_exact_bytes_and_a_generated_i
     let (published, frame) = tokio::join!(lobby.publish(b"hi"), peer.next_command());
     published.unwrap();
 
-    // "@PUB\n$7\ndefault\n$50\n", the SDK's prefix, 32 lowercase hex digits,
-    // "\n$2\nhi\n".
-    let prefix = "@PUB\n$7\ndefault\n$50\nmsg__rust_v0.1.0__";
+    // "@PUB\n$7\ndefault\n", the length of the id, the SDK's prefix, 32
+    // lowercase hex digits, "\n$2\nhi\n".
+    let id_prefix = message_id_prefix("rust", SDK_VERSION);
+    let prefix = format!("@PUB\n$7\ndefault\n${}\n{id_prefix}", id_prefix.len() + 32);
     let suffix = "\n$2\nhi\n";
     assert_eq!(frame.len(), prefix.len() + 32 + suffix.len(), "{frame:?}");
-    assert!(frame.starts_with(prefix), "{frame:?}");
+    assert!(frame.starts_with(prefix.as_str()), "{frame:?}");
     assert!(frame.ends_with(suffix), "{frame:?}");
 
     let generated = frame[prefix.len()..prefix.len() + 32].to_owned();
@@ -301,20 +304,21 @@ async fn command_at_the_2_mib_limit_is_sent_and_one_byte_more_is_refused_before_
     let (channel, mut peer, _server, _log) = connected_channel().await;
     let segment = channel.segment("s").unwrap();
 
-    // "@PUB\n$1\ns\n$50\n" (14 bytes), the 50-byte generated id
-    // (msg__rust_v0.1.0__ and 32 hex digits), "\n$2097077\n" (10 bytes), the
-    // payload and LF: 75 bytes of framing.
-    let (published, frame) =
-        tokio::join!(segment.publish(vec![7_u8; 2_097_077]), peer.next_frame());
+    // "@PUB\n$1\ns\n$1\nm\n$2097127\n" and the last LF are 25 bytes.
+    let (published, frame) = tokio::join!(
+        segment.publish_with_message_id(vec![7_u8; 2_097_127], "m"),
+        peer.next_frame()
+    );
     published.unwrap();
     assert_eq!(frame.len(), 2 * 1024 * 1024);
-    assert_eq!(&frame[..32], b"@PUB\n$1\ns\n$50\nmsg__rust_v0.1.0__");
-    assert_eq!(&frame[64..74], b"\n$2097077\n");
-    assert_eq!(frame.iter().filter(|&&byte| byte == 7).count(), 2_097_077);
+    assert_eq!(&frame[..24], b"@PUB\n$1\ns\n$1\nm\n$2097127\n");
+    assert_eq!(frame.iter().filter(|&&byte| byte == 7).count(), 2_097_127);
     assert_eq!(frame.last(), Some(&b'\n'));
 
     assert_eq!(
-        segment.publish(vec![7_u8; 2_097_078]).now_or_never(),
+        segment
+            .publish_with_message_id(vec![7_u8; 2_097_128], "m")
+            .now_or_never(),
         Some(Err(CelerisError::Configuration(
             COMMAND_TOO_LARGE.to_owned()
         )))

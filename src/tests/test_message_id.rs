@@ -19,7 +19,7 @@ fn generated_ids_name_the_sdk_and_its_version_then_32_hex_digits() {
     let message_id = generate_message_id();
 
     let random = message_id
-        .strip_prefix("msg__rust_v0.1.0__")
+        .strip_prefix(message_id_prefix("rust", SDK_VERSION).as_str())
         .expect("the id starts with the SDK's prefix");
 
     assert_eq!(random.len(), 32, "{message_id}");
@@ -76,13 +76,15 @@ async fn a_generated_id_is_sent_as_a_bulk_string() {
     let (published, frame) = tokio::join!(chat.publish(b"hi"), peer.next_command());
     published.unwrap();
 
+    let prefix = message_id_prefix("rust", SDK_VERSION);
+
     let message_id = frame
-        .strip_prefix("@PUB\n$4\nchat\n$50\n")
+        .strip_prefix(format!("@PUB\n$4\nchat\n${}\n", prefix.len() + 32).as_str())
         .and_then(|rest| rest.strip_suffix("\n$2\nhi\n"))
         .expect("the frame carries the id as a bulk string");
 
-    assert!(message_id.starts_with("msg__rust_v0.1.0__"), "{frame:?}");
-    assert!(is_lowercase_hex(&message_id[18..]), "{frame:?}");
+    assert!(message_id.starts_with(prefix.as_str()), "{frame:?}");
+    assert!(is_lowercase_hex(&message_id[prefix.len()..]), "{frame:?}");
 
     channel.close().await;
 } // end fn a_generated_id_is_sent_as_a_bulk_string
