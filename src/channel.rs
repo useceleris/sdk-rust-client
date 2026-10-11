@@ -582,11 +582,10 @@ impl ChannelInner {
         self.queue_interest_sync(kind, segment_id);
     } // end method release_interest
 
-    /// Does nothing before the first socket: installing one syncs every held
-    /// interest. While reconnecting the change waits in the queue, behind the
-    /// publishes queued before it.
+    /// Does nothing without a socket: installing one syncs every held
+    /// interest, and it holds no subscription to drop.
     fn queue_interest_sync(&mut self, kind: InterestKind, segment_id: &str) {
-        if self.current_connection.is_some() || self.state == ChannelState::Reconnecting {
+        if self.current_connection.is_some() {
             self.queue_interest(kind, segment_id);
         }
     } // end method queue_interest_sync

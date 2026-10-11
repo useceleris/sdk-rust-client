@@ -37,10 +37,6 @@ impl<Value> OrderedMap<Value> {
         self.entries.retain(|(existing, _)| existing != key);
     } // end method remove
 
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&str, &Value) -> bool) {
-        self.entries.retain(|(key, value)| keep(key, value));
-    } // end method retain
-
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
         self.entries
             .iter()

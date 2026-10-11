@@ -268,18 +268,15 @@ impl ChannelInner {
             publish.settle(Err(error.clone()));
         }
 
-        for pending in &mut self.queue.pending_interests {
-            pending.clear();
-        }
-
         self.drop_queue_connection();
     } // end method reset_queue
 
-    /// Forgets everything tied to the socket that dropped and keeps what still
-    /// waits to be sent (QUEUE-01): publishes never handed to a socket, and
-    /// subscription changes, which still follow the publishes queued before
-    /// them. A copy queued for a rate-limit resend is dropped: a publish that
-    /// the socket never wrote comes back from the writer (`take_unwritten`), and
+    /// Forgets everything tied to the socket that dropped and keeps the
+    /// publishes never handed to a socket, which still wait to be sent
+    /// (QUEUE-01). A subscription change that waits is dropped: the next
+    /// socket holds no subscription, and it syncs every held one itself. A
+    /// copy queued for a rate-limit resend is dropped: a publish that the
+    /// socket never wrote comes back from the writer (`take_unwritten`), and
     /// one that it wrote is never sent again. The rate-limit streak and the
     /// probe schedule stay, since a reconnect does not refill a quota.
     pub(crate) fn drop_queue_connection(&mut self) {
@@ -289,6 +286,10 @@ impl ChannelInner {
 
         if let Some(timer) = self.queue.probe_timer.take() {
             timer.stop();
+        }
+
+        for pending in &mut self.queue.pending_interests {
+            pending.clear();
         }
 
         for abandoned in &mut self.queue.abandoned_interests {
@@ -314,28 +315,17 @@ impl ChannelInner {
     /// Syncs every held subscription to a new socket: messages, then presence,
     /// each in registration order. A sequence of zero puts it ahead of every
     /// queued publish, even one queued before the connection dropped, so the
-    /// connection is a member of its segments again before its publishes join
-    /// theirs (QUEUE-01).
+    /// connection is a member of its segments again before its publishes go
+    /// out (QUEUE-01).
     ///
-    /// A new socket holds no subscription, so a waiting change that drops one
-    /// is kept only behind a queued publish to its segment, which joins it. A
-    /// publish never subscribes to presence.
+    /// A new socket holds no subscription, and a publish does not make one.
+    /// Thus a subscription cancelled during the outage needs no command.
     pub(crate) fn restore_interests(&mut self) {
         for kind in INTEREST_KINDS {
             let held = self.interests(kind).keys();
-            let publishes = &self.queue.publishes;
             let pending = &mut self.queue.pending_interests[index(kind)];
 
-            pending.retain(|segment_id, _| {
-                let published = publishes
-                    .iter()
-                    .any(|publish| publish.segment_id == segment_id);
-
-                kind == InterestKind::Message && published
-            });
-
             for segment_id in held {
-                pending.remove(&segment_id);
                 pending.set(&segment_id, 0);
             }
         }
@@ -493,9 +483,8 @@ impl ChannelInner {
     } // end method drain
 
     /// Finds the first subscription change with no earlier publish to its
-    /// segment still queued: publishing joins the segment, so a change has to
-    /// follow the publishes queued before it for the segment to end up as
-    /// asked.
+    /// segment still queued: the commands for one segment keep their call
+    /// order, so a change follows the publishes queued before it (RESEND-01).
     fn next_ready_interest(&self) -> Option<(InterestKind, String)> {
         for kind in INTEREST_KINDS {
             for (segment_id, &sequence) in self.queue.pending_interests[index(kind)].iter() {

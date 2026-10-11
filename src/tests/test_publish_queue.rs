@@ -210,12 +210,11 @@ async fn restoration_precedes_publishes_queued_across_the_reconnect() {
     }
 } // end fn restoration_precedes_publishes_queued_across_the_reconnect
 
-/// A subscription cancelled while reconnecting still follows a publish to its
-/// segment queued before it, so the segment ends up left as asked. A publish
-/// never subscribes to presence, so a cancelled presence subscription needs
-/// no command on the new socket.
+/// A new socket holds no subscription, and a publish does not make one. Thus
+/// a subscription cancelled while reconnecting needs no command on the new
+/// socket, also behind a publish to its segment that was queued before it.
 #[tokio::test(start_paused = true)]
-async fn cancelling_behind_a_queued_publish_leaves_the_segment_after_it() {
+async fn cancelling_while_reconnecting_sends_no_unsubscribe_on_the_new_socket() {
     let (channel, mut peer, server, _log) = connected_channel().await;
     let gamma = channel.segment("gamma").unwrap();
     let subscription = gamma.subscribe().unwrap();
@@ -236,12 +235,12 @@ async fn cancelling_behind_a_queued_publish_leaves_the_segment_after_it() {
         next.next_command().await,
         publish_command("gamma", "g-1", "x")
     );
-    assert_eq!(next.next_command().await, segment_command("UNSUB", "gamma"));
     queued.await.unwrap();
 
+    // An UNSUB or a PRES_UNSUB would go before this subscription.
     let _control = channel.segment("control").unwrap().subscribe().unwrap();
     assert_eq!(next.next_command().await, segment_command("SUB", "control"));
-} // end fn cancelling_behind_a_queued_publish_leaves_the_segment_after_it
+} // end fn cancelling_while_reconnecting_sends_no_unsubscribe_on_the_new_socket
 
 #[tokio::test(start_paused = true)]
 async fn publish_while_reconnecting_is_refused_when_the_queue_is_full() {

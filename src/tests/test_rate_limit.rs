@@ -308,7 +308,7 @@ async fn subscription_change_never_overtakes_an_earlier_publish_to_its_segment()
     let published = start_publish(&chat, "m-1", "x").await;
     subscription.cancel();
 
-    // Publishing joins the segment, so the UNSUB has to follow it.
+    // The commands for one segment keep their call order.
     assert_eq!(
         peer.next_command().await,
         publish_command("chat", "m-1", "x")

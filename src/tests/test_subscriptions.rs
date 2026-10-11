@@ -298,14 +298,8 @@ async fn channel_listener_gets_all_segments_after_segment_listeners_each_id_once
         .await;
     peer.send(delivery_frame("user", "default", "id-2", 2, b"yo"))
         .await;
-    peer.send(delivery_frame(
-        "user",
-        "joined-by-publish",
-        "id-3",
-        3,
-        b"ok",
-    ))
-    .await;
+    peer.send(delivery_frame("user", "no-listener", "id-3", 3, b"ok"))
+        .await;
 
     // A duplicate in another segment, and a delivery without an id.
     peer.send(delivery_frame("user", "other", "id-1", 4, b"hi"))
@@ -322,7 +316,7 @@ async fn channel_listener_gets_all_segments_after_segment_listeners_each_id_once
         vec![
             (b"hi".to_vec(), metadata("chat", "id-1", 1)),
             (b"yo".to_vec(), metadata("default", "id-2", 2)),
-            (b"ok".to_vec(), metadata("joined-by-publish", "id-3", 3)),
+            (b"ok".to_vec(), metadata("no-listener", "id-3", 3)),
             (b"last".to_vec(), metadata("chat", "id-4", 6)),
         ]
     );
