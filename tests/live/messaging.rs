@@ -95,11 +95,12 @@ async fn delivers_on_the_default_segment_without_subscribing() {
     assert_eq!(message.metadata.segment_id, "default");
 } // end fn delivers_on_the_default_segment_without_subscribing
 
-/// Needs an app on a plan with a payload cap of at least 1024 KiB. Framed,
-/// the full payload is larger than 1 MiB (LIMIT-01).
+/// Needs an app on a plan with a cap of at least 1024 KiB. The cap counts the
+/// whole encoded command, so the larger payload is the cap less its framing;
+/// its delivery is larger than 1 MiB (LIMIT-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn round_trips_large_binary_payloads() {
-    for size in [100 * 1024, 1024 * 1024] {
+    for size in [100 * 1024, 1024 * 1024 - 96] {
         let (publisher, receiver) = pair("large", Claims::default()).await;
         let bulk = segment(&receiver, "bulk");
         subscribe(&bulk);
@@ -157,10 +158,11 @@ async fn reports_a_publish_over_the_plan_cap_as_message_size_limit() {
     assert_eq!(channel.state(), ChannelState::Connected);
 } // end fn reports_a_publish_over_the_plan_cap_as_message_size_limit
 
-/// Edge: 1024 KiB is delivered (above), and one byte more is refused.
+/// Edge: the cap counts the command's framing, so a payload of the cap
+/// itself makes a command over it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refuses_a_payload_one_byte_over_the_1024_kib_plan_cap() {
-    let channel = connected(&unique_channel_reference("cap-plus-one"), Claims::default()).await;
+async fn refuses_a_full_1024_kib_payload() {
+    let channel = connected(&unique_channel_reference("cap-full"), Claims::default()).await;
 
     let rejected = await_error(
         &channel,
@@ -170,7 +172,7 @@ async fn refuses_a_payload_one_byte_over_the_1024_kib_plan_cap() {
     );
 
     segment(&channel, "bulk")
-        .publish(vec![0_u8; 1024 * 1024 + 1])
+        .publish(vec![0_u8; 1024 * 1024])
         .await
         .expect("the publish is accepted locally");
 
@@ -182,7 +184,7 @@ async fn refuses_a_payload_one_byte_over_the_1024_kib_plan_cap() {
     );
 
     assert_eq!(channel.state(), ChannelState::Connected);
-} // end fn refuses_a_payload_one_byte_over_the_1024_kib_plan_cap
+} // end fn refuses_a_full_1024_kib_payload
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_a_command_over_two_mebibytes_locally_and_stays_connected() {
@@ -491,3 +493,74 @@ async fn delivers_a_paced_burst_of_50_messages_in_publish_order_one_time_each() 
     assert_payloads(&received, &bodies);
     assert_eq!(distinct_message_ids(&received), 50);
 } // end fn delivers_a_paced_burst_of_50_messages_in_publish_order_one_time_each
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_over_cap_publishes_in_a_burst_by_message_id_and_delivers_the_rest_in_order() {
+    let (publisher, receiver) = pair("batch", Claims::default()).await;
+    let refused: Recorder<(ServerErrorType, Option<String>, ServerErrorResource)> =
+        Recorder::default();
+    let recorder = refused.clone();
+
+    publisher.events().on_error(move |error| {
+        if let CelerisError::Server(server_error) = error {
+            recorder.push((
+                server_error.error_type.clone(),
+                server_error.sub_type.clone(),
+                server_error.resource.clone(),
+            ));
+        }
+    });
+
+    let chat = segment(&receiver, "chat");
+    let received = collect(&chat);
+    subscribe(&chat);
+    settle().await;
+    let bodies = numbered("b", 20);
+    let bodies: Vec<&str> = bodies.iter().map(String::as_str).collect();
+
+    let last = await_message(
+        &chat,
+        |message| message.payload == b"b19",
+        "the last message of the burst",
+        Duration::from_secs(30),
+    );
+
+    // The publishes queue in call order while the writer sends the first
+    // over-cap one, so it packs the ones behind it (BATCH-01).
+    let target = segment(&publisher, "chat");
+    let over_cap = vec![0_u8; 1024 * 1024 + 1];
+    let message_ids: Vec<String> = bodies.iter().map(|body| format!("id-{body}")).collect();
+    let mut published = vec![
+        target.publish_with_message_id(over_cap.clone(), "too-big-1"),
+        target.publish_with_message_id(over_cap, "too-big-2"),
+    ];
+
+    for (body, message_id) in bodies.iter().zip(&message_ids) {
+        published.push(target.publish_with_message_id(body.as_bytes().to_vec(), message_id));
+    }
+
+    for outcome in futures_util::future::join_all(published).await {
+        outcome.expect("the publish is accepted locally");
+    }
+
+    last.wait().await;
+    settle().await;
+
+    assert_payloads(&received, &bodies);
+    assert_eq!(distinct_message_ids(&received), 20);
+    assert_eq!(
+        refused.all(),
+        vec![
+            (
+                ServerErrorType::MessageSizeLimitError,
+                Some("PUB".to_owned()),
+                ServerErrorResource::Text("too-big-1".to_owned()),
+            ),
+            (
+                ServerErrorType::MessageSizeLimitError,
+                Some("PUB".to_owned()),
+                ServerErrorResource::Text("too-big-2".to_owned()),
+            ),
+        ]
+    );
+} // end fn refuses_over_cap_publishes_in_a_burst_by_message_id_and_delivers_the_rest_in_order
