@@ -98,7 +98,7 @@ A channel reference is 1 to 255 ASCII letters, digits, `-` or `_`. A segment id 
 
 ## Subscribing and receiving
 
-`subscribe` registers interest in a segment. The first interest subscribes the segment, the last `cancel` unsubscribes it, and the SDK restores the subscriptions after each reconnect. The protocol has no acknowledgement, so a denial comes later through `on_error`. The connection is a member of the default segment from the connect, so that segment needs no subscription.
+`subscribe` registers interest in a segment. The first interest subscribes the segment, the last `cancel` unsubscribes it, and the SDK restores the subscriptions after each reconnect. A subscription needs read access to the segment, and a publish needs write access. The protocol has no acknowledgement, so a denial comes later through `on_error`. The connection is a member of the default segment from the connect, so that segment needs no subscription.
 
 ```rust,no_run
 use useceleris_client::{CelerisError, Segment};
@@ -123,9 +123,10 @@ Each message id is delivered one time in the deduplication window (`deduplicatio
 The server, not a listener, controls the messages that you receive from a segment:
 
 - When you hold a subscription to a segment, the connection receives the messages of that segment. A listener alone receives no messages.
-- When the connection publishes to a segment, the server also makes the connection a member of that segment. With read and write access, the connection then receives messages. With write access only, the connection receives no messages. With read access only, the server does not accept the publish. To receive messages, call `subscribe`.
-- When you cancel the last subscription of a segment, the server removes the connection from the segment. This also stops a membership from a publish. A presence subscription does not make or keep a membership.
-- After a reconnect, the SDK subscribes again only to the segments that you hold a subscription for.
+- A publish does not make the connection a member of the segment. To receive the messages of a segment, call `subscribe`. This is also necessary for your own publishes, which the connection receives only when its credentials allow echo.
+- With write access only, the connection can publish, and the server refuses `subscribe` with a `PermissionDeniedError`. With read access only, the connection can subscribe, and the server refuses the publish.
+- When you cancel the last subscription of a segment, the server removes the connection from the segment. A presence subscription does not make or keep a membership.
+- After a reconnect, the SDK subscribes again to the segments that you hold a subscription for.
 - The connection always receives the messages of `"default"`.
 - Listeners and subscriptions are different. When you remove one, the other does not change.
 
@@ -167,7 +168,7 @@ async fn ship(orders: &Segment) {
 }
 ```
 
-While the channel reconnects, `publish` waits in the publish queue. The SDK sends it after the reconnect, when your subscriptions are restored. If recovery stops in `Failed`, the publish fails with the terminal error, and if you close the channel, it fails with `CelerisError::Cancelled`. Before the first connect, during the first connect, and after `Failed` or `close`, `publish` fails with `CelerisError::NotConnected`. A publish over your plan's payload limit still returns `Ok`, and the server refuses it later with a `MessageSizeLimitError` through `on_error`. When you drop the future of `publish` before the socket starts to write it, the SDK takes the publish back.
+While the channel reconnects, `publish` waits in the publish queue. The SDK sends it after the reconnect, when your subscriptions are restored. If recovery stops in `Failed`, the publish fails with the terminal error, and if you close the channel, it fails with `CelerisError::Cancelled`. Before the first connect, during the first connect, and after `Failed` or `close`, `publish` fails with `CelerisError::NotConnected`. A publish does not join the segment: call `subscribe` to receive from it. Your plan's limit counts the whole encoded command, not only the payload. A publish over that limit still returns `Ok`, and the server refuses it later with a `MessageSizeLimitError` through `on_error`. When you drop the future of `publish` before the socket starts to write it, the SDK takes the publish back.
 
 ## Payloads
 
@@ -303,13 +304,14 @@ Recovery restores all subscriptions and always reports **possible gaps and dupli
 - There is no offline queue past a reconnect, no durable history and no global order. Publishes that wait in the publish queue when the connection drops go out after the reconnect, in call order, after the restored subscriptions. Publishes that the socket did not start to write go back to the front of the queue in their order. The publish that the socket was writing when the connection dropped reports `DeliveryUnknown`, and the SDK never sends it again.
 - A `RateLimitError` never names the command that it dropped. Thus the client stops sending for a short time, then sends again what it sent in the last two seconds: the subscriptions as their current state, then at most 64 publishes, each one time and with its original id, so receivers drop a copy that they already got. After eight limits in a row, the SDK treats the limit as a used quota: it stops sending again, and it tries the dropped subscriptions on a slow schedule, after one minute and then doubled up to one hour. The repeated sends count toward your usage.
 - When the writer is full, subscriptions and publishes wait for space. A subscription change goes before publishes, but never before a publish to its own segment that was queued before it.
+- A publish does not join a segment, and a presence subscription does not. Only `subscribe` joins.
 
 ## Limits and defaults
 
 | What | Value |
 | --- | --- |
 | Outbound command | 2 MiB encoded, refused before a write |
-| Plan payload limit | 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime; the server enforces it |
+| Plan command limit | 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime, for the whole encoded command; the server enforces it |
 | Writer limits | 64 commands or 2 MiB not yet written; `publish_queue_size` queued publishes (64 by default), plus repeated sends |
 | Pause after a rate limit | 1 second plus full jitter that grows with consecutive limits, at most 31 seconds |
 | Repeated sends | the commands of the last 2 seconds, at most 64 publishes, each one time |

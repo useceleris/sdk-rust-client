@@ -48,7 +48,8 @@ impl Segment {
     /// default segment is joined automatically and never subscribed or
     /// unsubscribed.
     ///
-    /// No acknowledgement exists: a denial arrives later through
+    /// A subscription needs read access to the segment. No acknowledgement
+    /// exists: a denial arrives later, as a `PermissionDeniedError`, through
     /// [`ChannelEventHandler::on_error`](crate::ChannelEventHandler::on_error).
     /// It fails with [`CelerisError::NotConnected`] once the channel is closing
     /// or closed.
@@ -102,6 +103,10 @@ impl Segment {
     /// once the socket accepted the bytes. That is not receipt, delivery or
     /// durability: the protocol has no acknowledgements.
     ///
+    /// A publish needs write access and does not join the segment. To receive
+    /// from the segment, your own publishes included, call
+    /// [`subscribe`](Segment::subscribe).
+    ///
     /// While the channel reconnects, the publish waits in the queue and is sent
     /// after the reconnect, once the restored subscriptions have gone out. It
     /// then fails with the error that
@@ -113,8 +118,9 @@ impl Segment {
     /// while connecting, and once failed or closed; with
     /// [`CelerisError::Backpressure`] when the publish queue (64 by default) is
     /// already full; and with [`CelerisError::DeliveryUnknown`] when the socket
-    /// failed during the write, which is never resent. A publish over the
-    /// plan's payload cap still succeeds here and is refused afterwards with a
+    /// failed during the write, which is never resent. The plan's cap counts
+    /// the whole encoded command, not only the payload. A publish over it
+    /// still succeeds here and is refused afterwards with a
     /// `MessageSizeLimitError` through `on_error`.
     ///
     /// Dropping the returned future takes the publish back if the socket has
