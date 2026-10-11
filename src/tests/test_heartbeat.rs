@@ -117,7 +117,7 @@ async fn a_heartbeat_outage_starts_when_the_server_was_last_heard() {
 
     // Reading answers the ping at 20 s; then the peer stops reading.
     assert_eq!(
-        peer.frames_within(Duration::from_secs(30)).await,
+        peer.commands_within(Duration::from_secs(30)).await,
         Vec::<String>::new()
     );
     let wall_before = SystemTime::now();
@@ -305,7 +305,7 @@ async fn no_heartbeat_outlives_its_socket() {
     let (channel, mut peer, server, _log) = connected_channel().await;
     let connected_at = Instant::now();
     assert_eq!(
-        peer.frames_within(Duration::from_secs(25)).await,
+        peer.commands_within(Duration::from_secs(25)).await,
         Vec::<String>::new()
     );
     assert_eq!(ping_offsets(&peer, connected_at), seconds(&[20]));
@@ -318,7 +318,7 @@ async fn no_heartbeat_outlives_its_socket() {
     })
     .await;
     assert_eq!(
-        replacement.frames_within(Duration::from_secs(50)).await,
+        replacement.commands_within(Duration::from_secs(50)).await,
         Vec::<String>::new()
     );
 

@@ -170,6 +170,15 @@ impl ChannelInner {
             self.receive_rate_limit();
         }
 
+        // A publish refused for its size names itself by message id; the other
+        // commands in its frame ran (BATCH-01).
+        if server_error.error_type == ServerErrorType::MessageSizeLimitError
+            && server_error.sub_type.as_deref() == Some("PUB")
+            && let ServerErrorResource::Text(message_id) = &server_error.resource
+        {
+            self.forget_refused(message_id);
+        }
+
         self.queue_error(CelerisError::Server(server_error));
     } // end method receive_server_error
 

@@ -2,6 +2,7 @@
 //! credential provider, event recorders and server frame builders. Nothing
 //! here touches the network.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -353,6 +354,7 @@ async fn socket_pair() -> (WebSocket, Peer) {
         Peer {
             socket: server,
             pipe,
+            commands: VecDeque::new(),
         },
     )
 } // end fn socket_pair
@@ -450,6 +452,9 @@ impl AsyncWrite for ControlledStream {
 pub(crate) struct Peer {
     socket: WebSocketStream<DuplexStream>,
     pipe: Arc<PipeControl>,
+
+    /// Commands of a `*N` frame that the test has not read yet.
+    commands: VecDeque<String>,
 } // end struct Peer
 
 impl Peer {
@@ -470,9 +475,18 @@ impl Peer {
         next.await.expect("the client sent no frame")
     } // end method next_frame
 
-    /// The next frame as text, for readable assertions on commands.
+    /// The next command as text, for readable assertions; a `*N` frame gives
+    /// its commands one at a time.
     pub(crate) async fn next_command(&mut self) -> String {
-        String::from_utf8(self.next_frame().await).expect("commands in these tests are text")
+        if let Some(command) = self.commands.pop_front() {
+            return command;
+        }
+
+        let frame =
+            String::from_utf8(self.next_frame().await).expect("commands in these tests are text");
+        self.commands = split_frame(&frame).into();
+
+        self.commands.pop_front().expect("a frame holds a command")
     } // end method next_command
 
     /// The next message of any kind, or `None` when the client closed.
@@ -483,23 +497,24 @@ impl Peer {
         }
     } // end method next_message
 
-    /// Reports the frames that the client sent within `wait`, answering pings.
-    pub(crate) async fn frames_within(&mut self, wait: Duration) -> Vec<String> {
-        let mut frames = Vec::new();
+    /// Reports the commands that the client sent within `wait`, each `*N`
+    /// frame split into its commands, answering pings.
+    pub(crate) async fn commands_within(&mut self, wait: Duration) -> Vec<String> {
+        let mut commands: Vec<String> = self.commands.drain(..).collect();
         let deadline = tokio::time::Instant::now() + wait;
 
         while let Ok(message) = tokio::time::timeout_at(deadline, self.socket.next()).await {
             match message {
                 Some(Ok(Message::Binary(data))) => {
-                    frames.push(String::from_utf8_lossy(&data).into_owned())
+                    commands.extend(split_frame(&String::from_utf8_lossy(&data)));
                 }
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             }
         }
 
-        frames
-    } // end method frames_within
+        commands
+    } // end method commands_within
 
     pub(crate) async fn send(&mut self, frame: impl Into<Vec<u8>>) {
         self.socket
@@ -585,6 +600,42 @@ impl Peer {
         }
     } // end method answer_in_background
 } // end impl Peer
+
+/// The commands of a frame: one, or each of a `*N` array.
+pub(crate) fn split_frame(frame: &str) -> Vec<String> {
+    let Some(body) = frame.strip_prefix('*') else {
+        return vec![frame.to_owned()];
+    };
+
+    let mut commands = Vec::new();
+    let mut offset = body.find('\n').expect("an array header ends its line") + 1;
+
+    while offset < body.len() {
+        let start = offset;
+        offset += body[offset..]
+            .find('\n')
+            .expect("a command name ends its line")
+            + 1;
+
+        // Fields follow the command name until the next command starts.
+        while offset < body.len() && !body[offset..].starts_with('@') {
+            let line_end = offset + body[offset..].find('\n').expect("a field ends its line");
+            let field = &body[offset..line_end];
+            offset = line_end + 1;
+
+            if let Some(length) = field
+                .strip_prefix('$')
+                .and_then(|length| length.parse::<usize>().ok())
+            {
+                offset += length + 1;
+            }
+        }
+
+        commands.push(body[start..offset].to_owned());
+    }
+
+    commands
+} // end fn split_frame
 
 /// A peer that a background task reads; dropping it drops the socket at once.
 pub(crate) struct AnsweringPeer {

@@ -19,7 +19,9 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream, client_async
 
 use crate::channel::{ChannelInner, ChannelShared};
 use crate::command_queue::QueuedPublish;
-use crate::constants::{MAXIMUM_BUFFERED_BYTES, MAXIMUM_PENDING_COMMANDS};
+use crate::constants::{
+    MAXIMUM_BATCH_BYTES, MAXIMUM_BATCH_COMMANDS, MAXIMUM_BUFFERED_BYTES, MAXIMUM_PENDING_COMMANDS,
+};
 use crate::decode::decode_server_message;
 use crate::errors::{CelerisError, protocol_error};
 use crate::heartbeat::heartbeat;
@@ -110,17 +112,17 @@ pub(crate) struct OutboundFrame {
 } // end struct OutboundFrame
 
 /// One socket and the tasks that drive it: a writer that writes handed-off
-/// frames in order, a reader that routes what arrives, and a heartbeat that
+/// frames in order, packed into batches (BATCH-01), a reader that routes what arrives, and a heartbeat that
 /// pings the server and finds a dead path. Guarded by the channel's lock.
 pub(crate) struct ConnectionState {
     pub(crate) id: u64,
 
-    /// Frames handed to the writer and not yet written, the one being written
-    /// first. They are bounded by count and bytes, so a maximum-size command
-    /// always fits an empty writer.
+    /// Frames handed to the writer and not yet written, the batch being
+    /// written first: its size is `writing`. They are bounded by count and
+    /// bytes, so a maximum-size command always fits an empty writer.
     outbound: VecDeque<OutboundFrame>,
     outbound_bytes: usize,
-    writing: bool,
+    writing: usize,
 
     /// Wakes the writer: a frame was handed off, or the connection closes or
     /// breaks.
@@ -204,20 +206,58 @@ impl ConnectionState {
     } // end method begin_closing
 
     fn is_writing(&self, publish: &Arc<QueuedPublish>) -> bool {
-        self.writing
-            && self
-                .outbound
-                .front()
-                .and_then(|frame| frame.publish.as_ref())
-                .is_some_and(|written| Arc::ptr_eq(written, publish))
+        self.outbound
+            .iter()
+            .take(self.writing)
+            .filter_map(|frame| frame.publish.as_ref())
+            .any(|written| Arc::ptr_eq(written, publish))
     } // end method is_writing
+
+    /// Marks the frames at the front of the writer that go out together, in
+    /// order: at most `MAXIMUM_BATCH_COMMANDS` of them, within
+    /// `MAXIMUM_BATCH_BYTES` with the array header. A first frame larger than
+    /// that goes alone. Returns the bytes to write: a single command as it is,
+    /// several in a `*N` array.
+    fn pack_batch(&mut self) -> Bytes {
+        let mut size = self.outbound[0].data.len();
+        let mut count = 1;
+
+        while let Some(frame) = self.outbound.get(count) {
+            let next = size + frame.data.len();
+            // The array header is "*", the count and LF.
+            let frame_length = 2 + (count + 1).to_string().len() + next;
+
+            if count == MAXIMUM_BATCH_COMMANDS || frame_length > MAXIMUM_BATCH_BYTES {
+                break;
+            }
+
+            size = next;
+            count += 1;
+        }
+
+        self.writing = count;
+
+        if count == 1 {
+            return self.outbound[0].data.clone();
+        }
+
+        let header = format!("*{count}\n");
+        let mut data = Vec::with_capacity(header.len() + size);
+        data.extend_from_slice(header.as_bytes());
+
+        for frame in self.outbound.iter().take(count) {
+            data.extend_from_slice(&frame.data);
+        }
+
+        Bytes::from(data)
+    } // end method pack_batch
 
     /// Takes back every frame of `publish` that the writer has not started, and
     /// reports if there was one. A rate limit can requeue a publish still in
     /// the writer, so it may have been handed over twice.
     pub(crate) fn remove_publish(&mut self, publish: &Arc<QueuedPublish>) -> (bool, bool) {
         let writing = self.is_writing(publish);
-        let skip = usize::from(self.writing);
+        let skip = self.writing;
         let before = self.outbound.len();
         let mut index = 0;
 
@@ -240,7 +280,7 @@ impl ConnectionState {
     /// Fails every publish handed to this connection that the socket never
     /// started to write.
     pub(crate) fn fail_unwritten(&mut self, error: &CelerisError) {
-        for frame in self.outbound.iter().skip(usize::from(self.writing)) {
+        for frame in self.outbound.iter().skip(self.writing) {
             if let Some(publish) = &frame.publish {
                 publish.settle(Err(error.clone()));
             }
@@ -258,7 +298,7 @@ impl ConnectionState {
     pub(crate) fn take_unwritten(&mut self) -> Vec<Arc<QueuedPublish>> {
         let mut publishes: Vec<Arc<QueuedPublish>> = Vec::new();
 
-        for frame in self.outbound.iter().skip(usize::from(self.writing)) {
+        for frame in self.outbound.iter().skip(self.writing) {
             let Some(publish) = &frame.publish else {
                 continue;
             };
@@ -280,9 +320,9 @@ impl ConnectionState {
         publishes
     } // end method take_unwritten
 
-    /// Empties the writer except for the frame that the socket is writing.
+    /// Empties the writer except for the batch that the socket is writing.
     fn drop_unwritten(&mut self) {
-        self.outbound.truncate(usize::from(self.writing));
+        self.outbound.truncate(self.writing);
         self.outbound_bytes = self.outbound.iter().map(|frame| frame.data.len()).sum();
     } // end method drop_unwritten
 
@@ -292,11 +332,11 @@ impl ConnectionState {
         self.broken = true;
         self.ready.notify_one();
 
-        if self.writing
-            && let Some(publish) = self
-                .outbound
-                .front()
-                .and_then(|frame| frame.publish.as_ref())
+        for publish in self
+            .outbound
+            .iter()
+            .take(self.writing)
+            .filter_map(|frame| frame.publish.as_ref())
         {
             publish.settle(Err(CelerisError::DeliveryUnknown(
                 "The connection dropped while the socket was writing the publish, so it may or may not have been sent."
@@ -351,7 +391,7 @@ impl ChannelInner {
             id,
             outbound: VecDeque::new(),
             outbound_bytes: 0,
-            writing: false,
+            writing: 0,
             ready: Arc::new(Notify::new()),
             closing: false,
             broken: false,
@@ -409,14 +449,11 @@ async fn write_loop(channel: Weak<ChannelShared>, id: u64, sink: SharedSink) {
             match inner.connection_mut(id) {
                 None => NextWrite::Stop,
                 Some(connection) if connection.broken => NextWrite::Stop,
-                Some(connection) => match connection.outbound.front() {
-                    Some(frame) => {
-                        connection.writing = true;
-                        NextWrite::Frame(frame.data.clone())
-                    }
-                    None if connection.closing => NextWrite::Close,
-                    None => NextWrite::Wait(Arc::clone(&connection.ready)),
-                },
+                Some(connection) if !connection.outbound.is_empty() => {
+                    NextWrite::Frame(connection.pack_batch())
+                }
+                Some(connection) if connection.closing => NextWrite::Close,
+                Some(connection) => NextWrite::Wait(Arc::clone(&connection.ready)),
             }
         };
 
@@ -444,7 +481,7 @@ async fn write_loop(channel: Weak<ChannelShared>, id: u64, sink: SharedSink) {
 } // end fn write_loop
 
 impl ChannelShared {
-    /// Settles the frame that the writer finished. Reports `false` when the
+    /// Settles the batch that the writer finished. Reports `false` when the
     /// writer must stop.
     fn finish_write(self: &Arc<Self>, id: u64, written: bool) -> bool {
         let mut inner = self.lock();
@@ -453,15 +490,14 @@ impl ChannelShared {
             return false;
         };
 
-        connection.writing = false;
-        let frame = connection.outbound.pop_front();
-        let size = frame.as_ref().map_or(0, |frame| frame.data.len());
-        connection.outbound_bytes -= size;
+        let batch: Vec<OutboundFrame> = connection.outbound.drain(..connection.writing).collect();
+        connection.writing = 0;
+        connection.outbound_bytes -= batch.iter().map(|frame| frame.data.len()).sum::<usize>();
 
-        let publish = frame.and_then(|frame| frame.publish);
+        let publishes = batch.into_iter().filter_map(|frame| frame.publish);
 
         if !written {
-            if let Some(publish) = publish {
+            for publish in publishes {
                 publish.settle(Err(CelerisError::DeliveryUnknown(
                     "The socket failed while writing the publish, so it may or may not have been sent.".to_owned(),
                 )));
@@ -482,7 +518,7 @@ impl ChannelShared {
             return false;
         }
 
-        if let Some(publish) = publish {
+        for publish in publishes {
             publish.settle(Ok(()));
         }
 

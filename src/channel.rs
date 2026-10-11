@@ -871,7 +871,7 @@ impl ChannelShared {
                 )));
             }
 
-            inner.queue_publish(segment_id, encoded?)?
+            inner.queue_publish(segment_id, message_id, encoded?)?
         };
 
         // Dropping this future takes the publish back; once it settled, that

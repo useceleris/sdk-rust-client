@@ -99,8 +99,8 @@ pub enum ServerErrorType {
     /// A message limit was exceeded.
     RateLimitError,
 
-    /// A publish payload exceeded the plan's cap, or a message exceeded the
-    /// 2 MiB transport ceiling.
+    /// An encoded publish command exceeded the plan's cap, or a message
+    /// exceeded the 2 MiB transport ceiling.
     MessageSizeLimitError,
 
     /// A server-side fault that the client did not cause.

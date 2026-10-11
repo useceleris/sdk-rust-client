@@ -86,7 +86,7 @@ async fn default_segment_never_sends_sub_or_unsub() {
     assert_next_frame_is_control_publish(&channel, &mut peer).await;
 
     // Nothing follows the control either.
-    let later = peer.frames_within(Duration::from_millis(2_500)).await;
+    let later = peer.commands_within(Duration::from_millis(2_500)).await;
     assert_eq!(later, Vec::<String>::new());
 
     channel.close().await;
@@ -101,7 +101,7 @@ async fn listener_alone_sends_nothing() {
     assert_next_frame_is_control_publish(&channel, &mut peer).await;
 
     // Nothing follows the control either.
-    let later = peer.frames_within(Duration::from_millis(2_500)).await;
+    let later = peer.commands_within(Duration::from_millis(2_500)).await;
     assert_eq!(later, Vec::<String>::new());
 
     channel.close().await;

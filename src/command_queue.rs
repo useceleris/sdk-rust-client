@@ -30,6 +30,7 @@ pub(crate) type PublishResult = Result<(), CelerisError>;
 /// while the channel's lock is held.
 pub(crate) struct QueuedPublish {
     pub(crate) segment_id: String,
+    pub(crate) message_id: String,
     pub(crate) data: Bytes,
 
     /// Its place in the order that commands were queued in.
@@ -145,6 +146,7 @@ impl ChannelInner {
     pub(crate) fn queue_publish(
         &mut self,
         segment_id: &str,
+        message_id: &str,
         data: Bytes,
     ) -> Result<(Arc<QueuedPublish>, oneshot::Receiver<PublishResult>), CelerisError> {
         let limit = self.client.publish_queue_size;
@@ -160,6 +162,7 @@ impl ChannelInner {
 
         let publish = Arc::new(QueuedPublish {
             segment_id: segment_id.to_owned(),
+            message_id: message_id.to_owned(),
             data,
             sequence: self.queue.sequence,
             progress: Mutex::new(PublishProgress {
@@ -547,6 +550,15 @@ impl ChannelInner {
             .recent_publishes
             .retain(|sent| !Arc::ptr_eq(&sent.publish, publish));
     } // end method forget_publish
+
+    /// Drops the publishes that the server refused for their size from the
+    /// resend record, so a later rate limit does not send, and bill, them
+    /// again.
+    pub(crate) fn forget_refused(&mut self, message_id: &str) {
+        self.queue
+            .recent_publishes
+            .retain(|sent| sent.publish.message_id != message_id);
+    } // end method forget_refused
 
     fn record_sent_interest(&mut self, kind: InterestKind, segment_id: &str) {
         let now = Instant::now();

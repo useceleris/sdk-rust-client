@@ -1,6 +1,7 @@
 //! Unit tests of crate-private behaviour, one file per topic.
 
 mod support;
+mod test_batching;
 mod test_client_options;
 mod test_close;
 mod test_concurrency;

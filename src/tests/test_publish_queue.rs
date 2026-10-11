@@ -102,8 +102,8 @@ async fn publish_while_reconnecting_is_sent_after_the_reconnect() {
 
 /// The publishes that the writer never started go back to the front of the
 /// queue, so they and those that waited for room behind them are sent after
-/// the reconnect, in call order. Only the one being written may have been
-/// sent: it is DeliveryUnknown and never sent again.
+/// the reconnect, in call order. Only the batch being written may have been
+/// sent: its publishes are DeliveryUnknown and never sent again.
 #[tokio::test(start_paused = true)]
 async fn unwritten_publishes_are_sent_after_the_reconnect_in_order() {
     let (channel, peer, server, _log) = connected_channel().await;
@@ -121,25 +121,37 @@ async fn unwritten_publishes_are_sent_after_the_reconnect_in_order() {
     yield_until("the held write", || peer.has_held_write()).await;
     drop_unreachable(&channel, &server, peer).await;
 
-    let mut publishes = publishes.into_iter();
-    let first = publishes.next().unwrap();
-    let mut waiting: Vec<PendingPublish<'_>> = publishes.collect();
+    let mut waiting: Vec<PendingPublish<'_>> = Vec::new();
+    let mut written = 0;
 
-    assert_eq!(
-        first.await,
-        Err(CelerisError::DeliveryUnknown(
-            "The connection dropped while the socket was writing the publish, so it may or may not have been sent."
-                .to_owned()
-        ))
-    );
-
-    for publish in &mut waiting {
-        assert_pending(publish).await;
+    for mut publish in publishes {
+        match poll_once(&mut publish).await {
+            Some(outcome) => {
+                assert!(
+                    waiting.is_empty(),
+                    "a settled publish follows a waiting one"
+                );
+                assert_eq!(
+                    outcome,
+                    Err(CelerisError::DeliveryUnknown(
+                        "The connection dropped while the socket was writing the publish, so it may or may not have been sent."
+                            .to_owned()
+                    ))
+                );
+                written += 1;
+            }
+            None => waiting.push(publish),
+        }
     }
+
+    assert!(
+        (1..=16).contains(&written),
+        "{written} publishes were being written"
+    );
 
     let mut next = reconnect_now(&channel, &server).await;
 
-    for message_id in &message_ids[1..] {
+    for message_id in &message_ids[written..] {
         assert_eq!(
             next.next_command().await,
             publish_command("default", message_id, "x")

@@ -47,7 +47,7 @@ async fn rate_limit_pauses_then_resends_subscriptions_before_publishes() {
 
     // Nothing at 999 ms; everything at exactly 1 000 ms with zero jitter.
     assert_eq!(
-        peer.frames_within(Duration::from_millis(999)).await,
+        peer.commands_within(Duration::from_millis(999)).await,
         Vec::<String>::new()
     );
     assert_eq!(peer.next_command().await, sub("chat"));
@@ -111,7 +111,7 @@ async fn rate_limit_resends_a_publish_byte_for_byte_with_its_original_id_only_on
     // A second limit does not resend it again.
     receive_rate_limit(&channel, &mut peer).await;
     assert_eq!(
-        peer.frames_within(Duration::from_secs(5)).await,
+        peer.commands_within(Duration::from_secs(5)).await,
         Vec::<String>::new()
     );
 
@@ -153,7 +153,7 @@ async fn rate_limit_backs_off_then_starts_over_after_a_quiet_window() {
 
     // Past the last pause and its suspect window, the streak starts over.
     assert_eq!(
-        peer.frames_within(Duration::from_secs(40)).await,
+        peer.commands_within(Duration::from_secs(40)).await,
         Vec::<String>::new()
     );
     let _lobby = channel.segment("lobby").unwrap().subscribe().unwrap();
@@ -269,7 +269,7 @@ async fn resending_returns_once_commands_go_a_window_without_a_limit() {
 
     // The probe went out 3 s ago with no limit after it: the quota is back.
     assert_eq!(
-        peer.frames_within(Duration::from_secs(3)).await,
+        peer.commands_within(Duration::from_secs(3)).await,
         Vec::<String>::new()
     );
     let _lobby = channel.segment("lobby").unwrap().subscribe().unwrap();

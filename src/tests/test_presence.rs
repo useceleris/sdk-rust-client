@@ -84,8 +84,8 @@ async fn presence_interests_share_one_count_and_send_golden_bytes() {
         .subscribe_presence()
         .unwrap()
         .cancel();
-    assert_eq!(peer.next_frame().await, b"@PRES_SUB\n$7\ndefault\n");
-    assert_eq!(peer.next_frame().await, b"@PRES_UNSUB\n$7\ndefault\n");
+    assert_eq!(peer.next_command().await, "@PRES_SUB\n$7\ndefault\n");
+    assert_eq!(peer.next_command().await, "@PRES_UNSUB\n$7\ndefault\n");
 
     channel.close().await;
 } // end fn presence_interests_share_one_count_and_send_golden_bytes

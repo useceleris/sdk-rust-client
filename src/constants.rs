@@ -8,8 +8,9 @@ use std::time::Duration;
 // checking them bounds no memory and only discards data.
 //
 // The command bound is the server's transport ceiling: above it no plan can
-// accept a command. Each plan's own, smaller payload cap is enforced by the
-// server and surfaces as a MessageSizeLimitError server error.
+// accept a command. Each plan's own, smaller cap on the whole encoded command
+// is enforced by the server and surfaces as a MessageSizeLimitError server
+// error.
 pub(crate) const MAXIMUM_COMMAND_BYTES: usize = 2 * 1024 * 1024;
 
 // Equal to the command bound, so a maximum-size command always fits an empty
@@ -19,6 +20,14 @@ pub(crate) const MAXIMUM_BUFFERED_BYTES: usize = MAXIMUM_COMMAND_BYTES;
 // Bounds the writer and the publishes kept for a rate-limit resend, and is the
 // default bound on the publishes that wait for the writer (publish queue size).
 pub(crate) const MAXIMUM_PENDING_COMMANDS: usize = 64;
+
+// Batching (BATCH-01). The writer sends the frames waiting for it in one `*N`
+// frame of at most this many commands and bytes, header included. A command
+// larger than the byte bound goes alone. The server refuses an array of more
+// than 16 commands.
+pub(crate) const MAXIMUM_BATCH_COMMANDS: usize = 16;
+
+pub(crate) const MAXIMUM_BATCH_BYTES: usize = 64 * 1024;
 
 // Outbound recovery (RESEND-01). A rate limit is reported without saying which
 // frame it dropped, so whatever went out recently is resent.
