@@ -778,10 +778,10 @@ impl ChannelShared {
         let generation = {
             let mut inner = self.lock();
 
-            if !inner
+            if inner
                 .retry_timer
                 .as_ref()
-                .is_some_and(|timer| timer.token == token)
+                .is_none_or(|timer| timer.token != token)
             {
                 return;
             }

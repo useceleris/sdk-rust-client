@@ -50,7 +50,7 @@ fn generated_ids_are_different_on_every_call() {
 #[test]
 fn the_version_is_the_crates() {
     assert_eq!(SDK_LANGUAGE, "rust");
-    assert_eq!(SDK_VERSION, "0.1.0");
+    assert_eq!(SDK_VERSION, env!("CARGO_PKG_VERSION"));
 } // end fn the_version_is_the_crates
 
 #[test]
