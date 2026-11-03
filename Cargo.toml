@@ -1,12 +1,12 @@
 [package]
 name = "useceleris-client"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Client SDK for Celeris realtime channels."
 license = "Apache-2.0"
 repository = "https://github.com/useceleris/sdk-rust-client"
-homepage = "https://useceleris.com"
+homepage = "https://useceleris.com/docs/sdks/rust"
 documentation = "https://docs.rs/useceleris-client"
 readme = "README.md"
 keywords = ["realtime", "websocket", "pubsub", "celeris"]
