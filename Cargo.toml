@@ -1,6 +1,6 @@
 [package]
 name = "useceleris-client"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Client SDK for Celeris realtime channels."
@@ -10,16 +10,43 @@ homepage = "https://useceleris.com"
 documentation = "https://docs.rs/useceleris-client"
 readme = "README.md"
 keywords = ["realtime", "websocket", "pubsub", "celeris"]
-categories = ["network-programming", "web-programming::websocket", "asynchronous"]
-exclude = [".env", ".env.example", ".github/", "Makefile", "AGENTS.md", "CONVENTIONS.md"]
+categories = [
+  "network-programming",
+  "web-programming::websocket",
+  "asynchronous",
+]
+exclude = [
+  ".env",
+  ".env.example",
+  ".github/",
+  "Makefile",
+  "AGENTS.md",
+  "CONVENTIONS.md",
+]
 
 [dependencies]
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+futures-util = { version = "0.3", default-features = false, features = [
+  "sink",
+  "std",
+] }
 getrandom = "0.4"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
 rustls-native-certs = "0.8"
-tokio = { version = "1", default-features = false, features = ["rt", "sync", "time", "net", "macros"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
+tokio = { version = "1", default-features = false, features = [
+  "rt",
+  "sync",
+  "time",
+  "net",
+  "macros",
+] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+  "handshake",
+  "rustls-tls-native-roots",
+] }
 
 [dev-dependencies]
 base64 = "0.22"
@@ -27,7 +54,11 @@ hmac = "0.13"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 sha2 = "0.11"
 syn = { version = "2", features = ["full", "visit"] }
-tokio = { version = "1", features = ["rt-multi-thread", "test-util", "io-util"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "test-util",
+  "io-util",
+] }
 
 # The live suites run only when named: `make live`.
 [[test]]
